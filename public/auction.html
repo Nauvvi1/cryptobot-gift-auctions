@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <title>Аукцион</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+
+<a href="/">← На главную</a>
+
+<h1 id="title">Аукцион</h1>
+
+<section>
+  <h2>Текущий раунд</h2>
+  <div id="roundInfo"></div>
+
+  <h3>Сделать ставку</h3>
+  <input id="amount" type="number" min="0" placeholder="Новая сумма ставки" />
+  <button id="bidBtn">Сделать ставку</button>
+
+  <pre id="bidRes"></pre>
+</section>
+
+<hr/>
+
+<section>
+  <h2>Топ участников</h2>
+  <div id="top"></div>
+</section>
+
+<hr/>
+
+<section>
+  <h2>События в реальном времени</h2>
+  <p class="hint">
+    Поток событий (SSE). Можно переподключаться и воспроизводить.
+  </p>
+  <pre id="events"></pre>
+</section>
+
+<script src="/app.js"></script>
+</body>
+</html>

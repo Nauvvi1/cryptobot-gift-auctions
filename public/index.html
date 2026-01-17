@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <title>Gift Auctions — Демо</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+
+<h1>Gift Auctions — демо-аукцион</h1>
+
+<section>
+  <h2>Пользователь</h2>
+
+  <select id="user">
+    <option>demo_user_1</option>
+    <option>demo_user_2</option>
+    <option>demo_user_3</option>
+    <option>demo_user_4</option>
+    <option>demo_user_5</option>
+  </select>
+
+  <button id="saveUser">Использовать</button>
+
+  <p class="hint">
+    Авторизация через HTTP-заголовок <code>X-User-Id</code>
+  </p>
+
+  <div id="wallet"></div>
+  <button id="deposit">Пополнить демо-баланс</button>
+</section>
+
+<hr/>
+
+<section>
+  <h2>Активные аукционы</h2>
+  <div id="auctions"></div>
+</section>
+
+<hr/>
+
+<section>
+  <h2>Администрирование (демо)</h2>
+
+  <button id="adminCreate">Создать демо-аукцион</button>
+  <button id="adminSeed">Добавить 500 предметов</button>
+  <button id="adminStart">Запустить аукцион</button>
+
+  <p class="hint">
+    Используется последний созданный аукцион
+  </p>
+
+  <pre id="adminStatus"></pre>
+</section>
+
+<script src="/app.js"></script>
+</body>
+</html>
