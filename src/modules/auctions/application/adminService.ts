@@ -7,15 +7,33 @@ import type { RoundConfig } from "../domain/types";
 import { HttpError } from "../../../common/errors";
 import { config } from "../../../app/config";
 
-export async function ensureWallet(mongo: MongoCtx, userId: string, currency: string) {
+export async function ensureWallet(
+  mongo: MongoCtx,
+  userId: string,
+  currency: string
+) {
   const c = colls(mongo.db);
   const t = now();
+
   await c.wallets.updateOne(
     { userId, currency },
-    { $setOnInsert: { userId, currency, available: 0, reserved: 0, version: 0, createdAt: t, updatedAt: t }, $set: { updatedAt: t } },
+    {
+      $set: {
+        updatedAt: t,
+      },
+      $setOnInsert: {
+        userId,
+        currency,
+        available: 0,
+        reserved: 0,
+        version: 0,
+        createdAt: t,
+      },
+    },
     { upsert: true }
   );
 }
+
 
 export async function createAuction(mongo: MongoCtx, input: { title: string; roundConfig: RoundConfig }) {
   const c = colls(mongo.db);
