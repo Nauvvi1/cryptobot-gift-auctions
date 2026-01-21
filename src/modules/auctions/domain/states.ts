@@ -1,20 +1,21 @@
 export const AuctionStatus = {
   DRAFT: "DRAFT",
-  ACTIVE: "ACTIVE",
-  COMPLETING_REFUNDS: "COMPLETING_REFUNDS",
-  CANCELING_REFUNDS: "CANCELING_REFUNDS",
+  LIVE: "LIVE",
   COMPLETED: "COMPLETED",
-  CANCELLED: "CANCELLED",
 } as const;
 
-export type AuctionStatus = (typeof AuctionStatus)[keyof typeof AuctionStatus];
-
 export const RoundStatus = {
-  SCHEDULED: "SCHEDULED",
   LIVE: "LIVE",
-  LOCKED: "LOCKED",
-  SETTLING: "SETTLING",
+  FINISHING: "FINISHING",
   FINISHED: "FINISHED",
 } as const;
 
-export type RoundStatus = (typeof RoundStatus)[keyof typeof RoundStatus];
+export const EntryStatus = {
+  ACTIVE: "ACTIVE",
+  WON: "WON",
+  LOST: "LOST",
+} as const;
+
+export type AuctionStatusT = typeof AuctionStatus[keyof typeof AuctionStatus];
+export type RoundStatusT = typeof RoundStatus[keyof typeof RoundStatus];
+export type EntryStatusT = typeof EntryStatus[keyof typeof EntryStatus];

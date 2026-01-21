@@ -1,35 +1,33 @@
 <!doctype html>
-<html lang="ru">
+<html>
 <head>
   <meta charset="utf-8" />
   <title>Профиль</title>
-  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
+  <div class="container">
+    <p><a href="/">← На главную</a></p>
+    <h1>Профиль</h1>
 
-<a href="/">← На главную</a>
-
-<h1>Профиль пользователя</h1>
-
-<section>
-  <h2>Кошелёк</h2>
-  <div id="wallet"></div>
-</section>
-
-<hr/>
-
-<section>
-  <h2>Мои ставки</h2>
-  <div id="myBids"></div>
-</section>
-
-<hr/>
-
-<section>
-  <h2>Мои выигрыши</h2>
-  <div id="myAwards"></div>
-</section>
+    <div class="card">
+      <div class="row">
+        <input id="userId" placeholder="userId" />
+        <button class="primary" id="load">Загрузить</button>
+      </div>
+      <pre id="out"></pre>
+    </div>
+  </div>
 
 <script src="/app.js"></script>
+<script>
+$("userId").value = qs("userId") || "";
+$("load").onclick = async () => {
+  const id = $("userId").value.trim();
+  const { user } = await api("/api/users/" + encodeURIComponent(id));
+  setText("out", JSON.stringify(user, null, 2));
+};
+if ($("userId").value) $("load").click();
+</script>
 </body>
 </html>

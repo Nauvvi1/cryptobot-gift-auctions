@@ -1,5 +1,6 @@
-import { randomUUID } from "crypto";
+import { nanoid } from "nanoid";
 
-export function uuid() {
-  return randomUUID();
+// useful for idempotency keys, request ids, etc.
+export function rid(prefix = "r") {
+  return `${prefix}_${nanoid(12)}`;
 }

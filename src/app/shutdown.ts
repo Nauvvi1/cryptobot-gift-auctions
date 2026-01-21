@@ -1,15 +1,14 @@
-import type { Server } from "http";
-import type { MongoCtx } from "./mongo";
 import { logger } from "./logger";
+import { disconnectMongo } from "./mongo";
 
-export function installShutdown({ server, mongo }: { server: Server; mongo: MongoCtx }) {
-  const shutdown = async () => {
-    logger.info("Shutdown requested");
-    await new Promise<void>((res) => server.close(() => res()));
-    await mongo.client.close();
+export function installShutdownHandlers(closeServer: () => Promise<void>) {
+  const shutdown = async (signal: string) => {
+    logger.info(`Shutting down (${signal})...`);
+    try { await closeServer(); } catch (e) { logger.error("closeServer failed", e); }
+    try { await disconnectMongo(); } catch (e) { logger.error("disconnectMongo failed", e); }
     process.exit(0);
   };
 
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", () => void shutdown("SIGINT"));
+  process.on("SIGTERM", () => void shutdown("SIGTERM"));
 }

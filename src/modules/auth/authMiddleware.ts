@@ -1,17 +1,22 @@
-import type { Request, Response, NextFunction } from "express";
+import { Request, Response, NextFunction } from "express";
 
+/**
+ * Demo auth:
+ * - reads userId from `x-user-id` header or `?userId=...`
+ * - attaches to req for convenience
+ * This is intentionally minimal for contest demo UI.
+ */
 declare global {
   namespace Express {
-    interface Request {
-      userId?: string;
-    }
+    interface Request { userId?: string }
   }
 }
 
 export function authMiddleware() {
   return (req: Request, _res: Response, next: NextFunction) => {
-    const userId = req.header("X-User-Id") || "demo_user_1";
-    req.userId = userId;
+    const header = req.header("x-user-id");
+    const query = typeof req.query.userId === "string" ? req.query.userId : undefined;
+    req.userId = header ?? query;
     next();
   };
 }

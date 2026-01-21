@@ -1,18 +1,17 @@
-import { HttpError } from "./errors";
+import { Request, Response, NextFunction } from "express";
 
-type Bucket = { resetAt: number; count: number };
+// very light in-memory rate limiting for demo (not production)
+const buckets = new Map<string, { n: number; ts: number }>();
 
-export class MemoryRateLimiter {
-  private map = new Map<string, Bucket>();
-
-  hit(key: string, windowMs: number, max: number) {
-    const t = Date.now();
-    const b = this.map.get(key);
-    if (!b || b.resetAt <= t) {
-      this.map.set(key, { resetAt: t + windowMs, count: 1 });
-      return;
-    }
-    if (b.count >= max) throw new HttpError(429, "RATE_LIMIT", "Too many requests");
-    b.count++;
-  }
+export function rateLimit() {
+  return (req: Request, res: Response, next: NextFunction) => {
+    const key = req.ip ?? "unknown";
+    const now = Date.now();
+    const b = buckets.get(key) ?? { n: 0, ts: now };
+    if (now - b.ts > 1000) { b.n = 0; b.ts = now; }
+    b.n += 1;
+    buckets.set(key, b);
+    if (b.n > 200) return res.status(429).json({ error: { code: "RATE_LIMIT", message: "Too many requests" } });
+    next();
+  };
 }

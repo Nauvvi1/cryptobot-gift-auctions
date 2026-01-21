@@ -1,61 +1,141 @@
 <!doctype html>
-<html lang="ru">
+<html>
 <head>
   <meta charset="utf-8" />
-  <title>Gift Auctions — Демо</title>
-  <link rel="stylesheet" href="/styles.css">
+  <title>Подарочные аукционы</title>
+  <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
+  <div class="container">
+    <h1>Подарочные аукционы</h1>
+    <p><small class="muted">Минимальный интерфейс для теста логики аукциона.</small></p>
 
-<h1>Gift Auctions — демо-аукцион</h1>
+    <div class="card">
+      <h2>1) Создать пользователя</h2>
+      <div class="row">
+        <input id="userName" placeholder="name (optional)" />
+        <button class="primary" id="createUser">Создать пользователя</button>
+      </div>
+      <p><small class="muted">Пользователь получит стартовый баланс автоматически.</small></p>
+      <pre id="userOut"></pre>
+      <p><a id="profileLink" href="/profile.html">Открыть профиль</a></p>
+    </div>
 
-<section>
-  <h2>Пользователь</h2>
+    <div class="card">
+      <h2>2) Создать аукцион (DRAFT)</h2>
+<div class="row">
+  <div>
+    <small class="muted">Название</small><br/>
+    <input id="title" placeholder="Название" value="Подарочный аукцион #1" />
+  </div>
+  <div>
+    <small class="muted">Всего предметов (totalItems)</small><br/>
+    <input id="totalItems" type="number" placeholder="totalItems" value="30" />
+  </div>
+  <div>
+    <small class="muted">Выдавать за раунд (awardPerRound)</small><br/>
+    <input id="awardPerRound" type="number" placeholder="awardPerRound" value="10" />
+  </div>
+  <div>
+    <small class="muted">Длительность раунда, сек (roundDurationSec)</small><br/>
+    <input id="roundDurationSec" type="number" placeholder="roundDurationSec" value="25" />
+  </div>
+</div>
+<div class="row">
+  <div>
+    <small class="muted">Anti-sniping: порог, сек (thresholdSec)</small><br/>
+    <input id="thresholdSec" type="number" placeholder="thresholdSec" value="4" />
+  </div>
+  <div>
+    <small class="muted">Anti-sniping: продление, сек (+extendSec)</small><br/>
+    <input id="extendSec" type="number" placeholder="extendSec" value="3" />
+  </div>
+  <div>
+    <small class="muted">Anti-sniping: макс. продлений (maxExtensions)</small><br/>
+    <input id="maxExtensions" type="number" placeholder="maxExtensions" value="4" />
+  </div>
+</div>
+<button class="primary" id="createAuction">Создать аукцион</button>
+      <pre id="auctionOut"></pre>
+      <p><a id="auctionLink" href="/auction.html">Открыть аукцион</a></p>
+    </div>
 
-  <select id="user">
-    <option>demo_user_1</option>
-    <option>demo_user_2</option>
-    <option>demo_user_3</option>
-    <option>demo_user_4</option>
-    <option>demo_user_5</option>
-  </select>
+    <div class="card">
+      <h2>3) Запустить аукцион</h2>
+      <p><small class="muted">Создаёт раунд #1. Дальше раунды завершаются автоматически по таймеру.</small></p>
+      <div class="row">
+        <input id="startAuctionId" placeholder="auctionId" />
+        <button class="primary" id="startAuction">Запустить</button>
+      </div>
+      <pre id="startOut"></pre>
+    </div>
+  </div>
 
-  <button id="saveUser">Использовать</button>
-
-  <p class="hint">
-    Авторизация через HTTP-заголовок <code>X-User-Id</code>
-  </p>
-
-  <div id="wallet"></div>
-  <button id="deposit">Пополнить демо-баланс</button>
-</section>
-
-<hr/>
-
-<section>
-  <h2>Активные аукционы</h2>
-  <div id="auctions"></div>
-</section>
-
-<hr/>
-
-<section>
-  <h2>Администрирование (демо)</h2>
-
-  <button id="demoFast">Быстрый демо-аукцион (≈60 сек)</button>
-  <br/><br/>
-
-  <button id="adminCreate">Создать демо-аукцион</button>
-  <button id="adminSeed">Добавить 500 предметов</button>
-  <button id="adminStart">Запустить аукцион</button>
-
-  <p class="hint">
-    Используется последний созданный аукцион
-  </p>
-
-  <pre id="adminStatus"></pre>
-</section>
-
-<script src="/app.js"></script>
+  <script src="/app.js"></script>
+  <script>
+  const LS_USER_ID = "giftAuction:lastUserId";
+  
+  let currentUserId = null;
+  let currentAuctionId = null;
+  
+  function syncCurrentUserFromStorage() {
+    const v = localStorage.getItem(LS_USER_ID);
+    currentUserId = (v && isHex24(v)) ? v : null;
+  }
+  
+  syncCurrentUserFromStorage();
+  
+  $("createUser").onclick = async () => {
+    const name = $("userName").value || undefined;
+  
+    const { user } = await api("/api/users", {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    });
+  
+    currentUserId = user._id;
+  
+    localStorage.setItem(LS_USER_ID, currentUserId);
+  
+    setText("userOut", JSON.stringify(user, null, 2));
+    $("profileLink").href = "/profile.html?userId=" + encodeURIComponent(currentUserId);
+  };
+  
+  $("createAuction").onclick = async () => {
+    syncCurrentUserFromStorage();
+  
+    const payload = {
+      title: $("title").value,
+      totalItems: Number($("totalItems").value),
+      awardPerRound: Number($("awardPerRound").value),
+      roundDurationSec: Number($("roundDurationSec").value),
+      antiSniping: {
+        thresholdSec: Number($("thresholdSec").value),
+        extendSec: Number($("extendSec").value),
+        maxExtensions: Number($("maxExtensions").value),
+      },
+    };
+  
+    const { auction } = await api("/api/auctions", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  
+    currentAuctionId = auction._id;
+  
+    setText("auctionOut", JSON.stringify(auction, null, 2));
+  
+    $("auctionLink").href = "/auction.html?auctionId=" + encodeURIComponent(currentAuctionId);
+  
+    $("startAuctionId").value = currentAuctionId;
+  };
+  
+  $("startAuction").onclick = async () => {
+    const id = $("startAuctionId").value.trim();
+    const { round } = await api("/api/auctions/" + encodeURIComponent(id) + "/start", { method: "POST" });
+    setText("startOut", JSON.stringify(round, null, 2));
+  };
+  </script>
+  
 </body>
 </html>

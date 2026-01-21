@@ -1,28 +1,41 @@
-import type { Response } from "express";
+import { Response } from "express";
+import { rid } from "../../../common/ids";
 
-type Client = { res: Response; auctionId?: string; roundId?: string; userId?: string; afterSeq: number };
+type Client = { id: string; res: Response; auctionId: string };
 
-export class SSEHub {
-  private clients = new Set<Client>();
+const clients: Client[] = [];
 
-  add(res: Response, client: Omit<Client, "res">) {
-    const c: Client = { ...client, res };
-    this.clients.add(c);
+export function sseAddClient(res: Response, auctionId: string) {
+  const id = rid("sse");
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+  });
+  res.write(`event: hello
+data: ${JSON.stringify({ ok: true, id })}
 
-    res.on("close", () => {
-      this.clients.delete(c);
-    });
-  }
+`);
+  const client: Client = { id, res, auctionId };
+  clients.push(client);
 
-  publish(event: any) {
-    for (const c of this.clients) {
-      if (event.seq != null && event.seq <= c.afterSeq) continue;
-      if (c.auctionId && event.auctionId !== c.auctionId) continue;
-      if (c.roundId && event.roundId !== c.roundId) continue;
+  const close = () => {
+    const idx = clients.findIndex((c) => c.id === id);
+    if (idx >= 0) clients.splice(idx, 1);
+  };
+  res.on("close", close);
+  res.on("error", close);
 
-      c.res.write(`data: ${JSON.stringify(event)}\n\n`);
-    }
-  }
+  return id;
 }
 
-export const sseHub = new SSEHub();
+export function sseBroadcast(auctionId: string, event: string, payload: unknown) {
+  const data = `event: ${event}
+data: ${JSON.stringify(payload)}
+
+`;
+  for (const c of clients) {
+    if (c.auctionId !== auctionId) continue;
+    try { c.res.write(data); } catch { /* ignore */ }
+  }
+}

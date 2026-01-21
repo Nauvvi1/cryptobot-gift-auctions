@@ -1,8 +1,12 @@
-import { z } from "zod";
-import { HttpError } from "./errors";
+import { assert } from "./errors";
 
-export function parseOrThrow<T>(schema: z.ZodType<T>, input: any): T {
-  const r = schema.safeParse(input);
-  if (!r.success) throw new HttpError(400, "VALIDATION_ERROR", "Invalid request", r.error.flatten());
-  return r.data;
+export function asNumber(v: unknown, name: string) {
+  const n = typeof v === "string" ? Number(v) : (typeof v === "number" ? v : NaN);
+  assert(Number.isFinite(n), "VALIDATION", `${name} must be a number`);
+  return n;
+}
+
+export function asString(v: unknown, name: string, max = 200) {
+  assert(typeof v === "string" && v.length > 0 && v.length <= max, "VALIDATION", `${name} must be a non-empty string (<=${max})`);
+  return v;
 }

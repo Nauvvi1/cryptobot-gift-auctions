@@ -1,5 +1,11 @@
-import { HttpError } from "../../../common/errors";
+import { assert } from "../../../common/errors";
+import { AuctionDoc } from "./types";
+import { AuctionStatus } from "./states";
 
-export function assertNonNegative(label: string, v: number) {
-  if (v < 0) throw new HttpError(500, "INVARIANT_BROKEN", `${label} < 0`, { v });
+export function assertAuctionMutable(a: AuctionDoc) {
+  assert(a.status === AuctionStatus.DRAFT, "STATE", "Auction must be DRAFT for this operation");
+}
+
+export function assertAuctionLive(a: AuctionDoc) {
+  assert(a.status === AuctionStatus.LIVE, "STATE", "Auction must be LIVE");
 }

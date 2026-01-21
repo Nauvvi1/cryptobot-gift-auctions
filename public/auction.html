@@ -1,59 +1,360 @@
 <!doctype html>
-<html lang="ru">
+<html>
 <head>
   <meta charset="utf-8" />
   <title>Аукцион</title>
-  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
+  <div class="hud">
+    <div class="hud-card">
+      <div class="big" id="hudStatus">Статус: —</div>
+      <div class="sub" id="hudItems">Выдано: —</div>
+    </div>
+    <div class="hud-card">
+      <div class="big" id="hudRound">Раунд: —</div>
+      <div class="sub" id="hudExt">Продлений: —</div>
+    </div>
+    <div class="hud-card">
+      <div class="big" id="hudTimer">До конца: —</div>
+      <div class="sub" id="hudEndsAt">Конец: —</div>
+    </div>
+  </div>
 
-<a href="/">← На главную</a>
+  <div class="container">
+    <p><a href="/">← На главную</a></p>
+    <h1>Аукцион</h1>
 
-<h1 id="title">Аукцион</h1>
+    <div class="card">
+      <div class="row">
+        <div>
+          <small class="muted">Auction ID</small><br/>
+          <input id="auctionId" placeholder="24-символьный id" />
+        </div>
+        <div style="align-self:end;">
+          <button class="primary" id="load">Загрузить</button>
+        </div>
+      </div>
+      <pre id="auctionOut"></pre>
+      <pre id="roundOut"></pre>
+      <pre id="loadOut"></pre>
+    </div>
 
-<section>
-  <h2>Пользователь</h2>
-  <select id="user">
-    <option>demo_user_1</option>
-    <option>demo_user_2</option>
-    <option>demo_user_3</option>
-    <option>demo_user_4</option>
-    <option>demo_user_5</option>
-  </select>
-  <button id="saveUser">Использовать</button>
-  <p class="hint">Авторизация через HTTP-заголовок <code>X-User-Id</code></p>
-</section>
+    <div class="card">
+      <h2>Топ текущего раунда (ACTIVE)</h2>
+      <table>
+        <thead><tr><th>#</th><th>User</th><th>Ставка</th><th>Последняя ставка</th><th>Статус</th></tr></thead>
+        <tbody id="topBody"></tbody>
+      </table>
+    </div>
 
-<hr/>
+    <div class="card">
+      <h2>Сделать ставку</h2>
+      <div class="row">
+        <div>
+          <small class="muted">User ID</small><br/>
+          <input id="userId" placeholder="24-символьный id" />
+        </div>
+        <div>
+          <small class="muted">Сумма ставки (amount)</small><br/>
+          <input id="amount" type="number" placeholder="amount" value="10" />
+        </div>
+        <div style="align-self:end;">
+          <button class="primary" id="bid">Поставить</button>
+        </div>
+      </div>
+      <small class="muted" id="bidHint">Введите сумму больше вашей текущей ставки.</small>
+      <pre id="bidOut"></pre>
+    </div>
 
-<section>
-  <h2>Текущий раунд</h2>
-  <div id="roundInfo"></div>
+    <div class="card">
+      <h2>Демо-нагрузка (боты)</h2>
+      <p><small class="muted">Один запуск. Боты ставят каждые N–M мс. Не ставят в последние 3 секунды раунда.</small></p>
+      <div class="row">
+        <div>
+          <small class="muted">Количество ботов</small><br/>
+          <input id="botsCount" type="number" value="50" />
+        </div>
+        <div>
+          <small class="muted">Интервал min, мс</small><br/>
+          <input id="botsMin" type="number" value="700" />
+        </div>
+        <div>
+          <small class="muted">Интервал max, мс</small><br/>
+          <input id="botsMax" type="number" value="1200" />
+        </div>
+        <div style="align-self:end;">
+          <button class="primary" id="bots">Запустить демо-нагрузку</button>
+        </div>
+      </div>
+      <pre id="botsOut"></pre>
+    </div>
 
-  <h3>Сделать ставку</h3>
-  <input id="amount" type="number" min="0" placeholder="Новая сумма ставки" />
-  <button id="bidBtn">Сделать ставку</button>
+    <div class="card">
+      <h2>Логи</h2>
+      <pre id="logs"></pre>
+    </div>
+  </div>
 
-  <pre id="bidRes"></pre>
-</section>
+  <div class="modal-backdrop" id="resultsBackdrop">
+    <div class="modal" role="dialog" aria-modal="true">
+      <h2>Итоги аукциона</h2>
+      <div id="resultsBody"></div>
+      <div class="modal-actions">
+        <button id="closeModal">Закрыть</button>
+      </div>
+    </div>
+  </div>
 
-<hr/>
-
-<section>
-  <h2>Топ участников</h2>
-  <div id="top"></div>
-</section>
-
-<hr/>
-
-<section>
-  <h2>События в реальном времени</h2>
-  <p class="hint">
-    Поток событий (SSE). Можно переподключаться и воспроизводить.
-  </p>
-  <pre id="events"></pre>
-</section>
-
-<script src="/app.js"></script>
+  <script src="/app.js"></script>
+  <script>
+  const LS_USER_ID = "giftAuction:lastUserId";
+  
+  let endAt = null;
+  let timerId = null;
+  let es = null;
+  let lastAuctionStatus = null;
+  
+  function syncUserIdFromStorageAlways() {
+    const v = localStorage.getItem(LS_USER_ID);
+    $("userId").value = (v && isHex24(v)) ? v : "";
+  }
+  
+  function renderTop(top) {
+    const tbody = $("topBody");
+    tbody.innerHTML = "";
+    top.forEach((e, idx) => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${idx + 1}</td>
+        <td>${e.userId}</td>
+        <td>${e.amount}</td>
+        <td>${fmtDate(e.lastBidAt)}</td>
+        <td>${e.status}</td>
+      `;
+      tbody.appendChild(tr);
+    });
+  }
+  
+  function setHud(auction, round) {
+    if (auction) {
+      $("hudStatus").textContent = "Статус: " + auction.status;
+      $("hudItems").textContent = `Выдано: ${auction.itemsAwarded}/${auction.totalItems}`;
+    }
+    if (round) {
+      $("hudRound").textContent = "Раунд: #" + round.index + " (" + round.status + ")";
+      $("hudExt").textContent = "Продлений: " + round.extensions;
+      endAt = round.endAt;
+    } else {
+      $("hudRound").textContent = "Раунд: —";
+      $("hudExt").textContent = "Продлений: —";
+      endAt = null;
+    }
+    tickTimer();
+  }
+  
+  function tickTimer() {
+    if (!endAt) {
+      $("hudTimer").textContent = "До конца: —";
+      $("hudEndsAt").textContent = "Конец: —";
+      return;
+    }
+    const msLeft = new Date(endAt).getTime() - Date.now();
+    const s = Math.max(0, Math.ceil(msLeft / 1000));
+    $("hudTimer").textContent = "До конца: " + s + "с";
+    $("hudEndsAt").textContent = "Конец: " + fmtDate(endAt);
+    if (timerId) clearTimeout(timerId);
+    timerId = setTimeout(tickTimer, 250);
+  }
+  
+  function log(msg) {
+    const el = $("logs");
+    el.textContent = (el.textContent + "\n" + msg).trim();
+  }
+  
+  function setBidEnabled(canBid, reason) {
+    $("bid").disabled = !canBid;
+    $("bidHint").textContent = canBid ? "Введите сумму больше вашей текущей ставки." : (reason || "Ставки недоступны.");
+  }
+  
+  async function loadAll() {
+    clearInline("loadOut");
+  
+    const auctionId = $("auctionId").value.trim();
+    if (!isHex24(auctionId)) {
+      showInline("loadOut", "❌ Некорректный Auction ID (нужно 24 hex-символа)");
+      return;
+    }
+  
+    const { auction } = await api("/api/auctions/" + encodeURIComponent(auctionId));
+    setText("auctionOut", JSON.stringify(auction, null, 2));
+  
+    let round = null;
+    if (auction.status === "LIVE") {
+      const rr = await api("/api/auctions/" + encodeURIComponent(auctionId) + "/round");
+      round = rr.round;
+      setText("roundOut", JSON.stringify(round, null, 2));
+    } else {
+      setText("roundOut", "");
+    }
+  
+    setHud(auction, round);
+  
+    const { top } = await api("/api/auctions/" + encodeURIComponent(auctionId) + "/top?limit=30");
+    renderTop(top);
+  
+    const canBid = auction.status === "LIVE" && round && round.status === "LIVE";
+    setBidEnabled(
+      !!canBid,
+      auction.status !== "LIVE"
+        ? (auction.status === "COMPLETED" ? "Аукцион завершён." : "Аукцион ещё не запущен.")
+        : "Раунд не активен.",
+    );
+  
+    if (lastAuctionStatus && lastAuctionStatus !== "COMPLETED" && auction.status === "COMPLETED") {
+      await showResultsModal(auctionId);
+    }
+    lastAuctionStatus = auction.status;
+  }
+  
+  async function showResultsModal(auctionId) {
+    const { results } = await api("/api/auctions/" + encodeURIComponent(auctionId) + "/results");
+    const body = $("resultsBody");
+    body.innerHTML = "";
+  
+    const roundKeys = Object.keys(results).filter(k => k !== "0").sort((a,b) => Number(a)-Number(b));
+    if (roundKeys.length === 0) {
+      body.innerHTML = "<p><small class='muted'>Победителей не найдено.</small></p>";
+    } else {
+      for (const rk of roundKeys) {
+        const winners = results[rk];
+        const block = document.createElement("div");
+        block.className = "card";
+        const rows = winners.map((w, idx) =>
+          `<tr><td>${idx+1}</td><td>${w.userId}</td><td>${w.amount}</td><td>${w.wonAt ? fmtDate(w.wonAt) : ""}</td></tr>`
+        ).join("");
+        block.innerHTML = `
+          <h3 style="margin:0 0 8px 0;">Раунд #${rk}</h3>
+          <table>
+            <thead><tr><th>#</th><th>User</th><th>Ставка</th><th>Когда</th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        `;
+        body.appendChild(block);
+      }
+    }
+  
+    $("resultsBackdrop").style.display = "flex";
+  }
+  
+  function closeModal() {
+    $("resultsBackdrop").style.display = "none";
+  }
+  
+  $("closeModal").onclick = closeModal;
+  
+  $("resultsBackdrop").addEventListener("click", (e) => {
+    if (e.target && e.target.id === "resultsBackdrop") closeModal();
+  });
+  
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeModal();
+  });
+  
+  $("auctionId").value = qs("auctionId") || "";
+  syncUserIdFromStorageAlways();
+  
+  $("userId").addEventListener("change", () => {
+    const v = $("userId").value.trim();
+    if (isHex24(v)) localStorage.setItem(LS_USER_ID, v);
+  });
+  
+  $("load").onclick = async () => {
+    try {
+      syncUserIdFromStorageAlways();
+  
+      await loadAll();
+      const auctionId = $("auctionId").value.trim();
+      if (!isHex24(auctionId)) return;
+  
+      if (es) es.close();
+      es = new EventSource("/api/auctions/" + encodeURIComponent(auctionId) + "/events");
+      es.addEventListener("hello", () => log("SSE: подключено"));
+      es.addEventListener("auction", (e) => { log("auction: " + e.data); loadAll().catch(()=>{}); });
+      es.addEventListener("round", (e) => { log("round: " + e.data); loadAll().catch(()=>{}); });
+      es.addEventListener("top", () => { loadAll().catch(()=>{}); });
+      es.addEventListener("log", (e) => { try { const o = JSON.parse(e.data); log(o.msg || e.data); } catch { log(e.data); } });
+    } catch (err) {
+      showInline("loadOut", "❌ " + (err.message || "Ошибка загрузки"));
+    }
+  };
+  
+  $("bid").onclick = async () => {
+    clearInline("bidOut");
+    try {
+      syncUserIdFromStorageAlways();
+  
+      const auctionId = $("auctionId").value.trim();
+      const userId = $("userId").value.trim();
+      const amount = Number($("amount").value);
+  
+      if (!isHex24(auctionId)) { showInline("bidOut", "❌ Некорректный Auction ID"); return; }
+      if (!isHex24(userId)) { showInline("bidOut", "❌ Некорректный User ID"); return; }
+      if (!Number.isFinite(amount) || amount <= 0) { showInline("bidOut", "❌ Некорректная сумма ставки"); return; }
+  
+      await api("/api/auctions/" + encodeURIComponent(auctionId) + "/bid", {
+        method: "POST",
+        body: JSON.stringify({ userId, amount }),
+      });
+  
+      localStorage.setItem(LS_USER_ID, userId);
+  
+      showInline("bidOut", "✅ Ставка принята");
+      await loadAll();
+    } catch (err) {
+      const code = err.code || "ERROR";
+      const details = err.details || {};
+      let msg = err.message || "Ошибка";
+  
+      if (code === "BID_TOO_LOW" && typeof details.currentAmount === "number") {
+        const next = details.currentAmount + 1;
+        $("amount").value = String(next);
+        msg = msg + ` (текущая: ${details.currentAmount}, попробуйте: ${next})`;
+      }
+  
+      showInline("bidOut", `❌ ${msg} [${code}]`);
+    }
+  };
+  
+  $("bots").onclick = async () => {
+    clearInline("botsOut");
+    try {
+      syncUserIdFromStorageAlways();
+  
+      const auctionId = $("auctionId").value.trim();
+      if (!isHex24(auctionId)) { showInline("botsOut", "❌ Некорректный Auction ID"); return; }
+  
+      const count = Number($("botsCount").value);
+      const intervalMinMs = Number($("botsMin").value);
+      const intervalMaxMs = Number($("botsMax").value);
+  
+      if (!Number.isFinite(count) || count <= 0) { showInline("botsOut", "❌ Количество ботов должно быть > 0"); return; }
+      if (!Number.isFinite(intervalMinMs) || intervalMinMs < 50) { showInline("botsOut", "❌ min интервал слишком мал"); return; }
+      if (!Number.isFinite(intervalMaxMs) || intervalMaxMs < intervalMinMs) { showInline("botsOut", "❌ max интервал должен быть ≥ min"); return; }
+  
+      await api("/api/auctions/" + encodeURIComponent(auctionId) + "/demo-bots", {
+        method: "POST",
+        body: JSON.stringify({ count, intervalMinMs, intervalMaxMs }),
+      });
+  
+      showInline("botsOut", "✅ Демо-боты запущены");
+    } catch (err) {
+      showInline("botsOut", "❌ " + (err.message || "Ошибка запуска ботов"));
+    }
+  };
+  
+  if ($("auctionId").value) $("load").click();
+  </script>
+  
 </body>
 </html>

@@ -1,136 +1,64 @@
-# Gift Auctions Platform  
-**Digital goods auction platform (Node.js · TypeScript · MongoDB)**
+# Gift Auctions Platform (Clean Version)
 
----
+Minimal, readable implementation of a multi-round auction mechanic (inspired by Telegram Gift Auctions), focused on:
+- **one clear auction flow**
+- **correct concurrency under load**
+- **transparent domain model**
+- **simple UI** for judges (no "magic", no hidden modes)
 
-## 1. Что это за проект
+## What you get
+- Node.js + TypeScript + MongoDB (replica set for transactions)
+- Multi-round auction:
+  - entries bid during a round
+  - at round end: top `awardPerRound` are marked **WON**
+  - others remain **ACTIVE** and continue to next round
+  - when `totalItems` are exhausted → auction **COMPLETED** and remaining ACTIVE become **LOST**
+- Anti-sniping extension:
+  - if a bid is placed within `thresholdSec` of `round.endAt`, round end is extended by `extendSec`
+  - limited by `maxExtensions`
+- SSE events stream for live UI updates
+- One-button demo load (50 bots)
 
-Это backend + demo-UI платформы аукционов цифровых товаров, вдохновлённой механикой **Gift Auctions**:
-
-- аукцион состоит из **раундов**
-- пользователи делают **накопительные ставки**
-- побеждают **Top-N участников**
-- невыигравшие средства **переносятся** в следующий раунд
-- система устойчива к гонкам, повторам запросов и высоким нагрузкам
-
-Проект сделан как **contest-grade / production-ready пример**, с акцентом на:
-- корректную финансовую модель
-- идемпотентность
-- детерминированность
-- масштабируемость
-
----
-
-## 2. Понимание механики аукциона
-
-### 2.1 Общая логика
-
-1. Аукцион состоит из последовательных **раундов**
-2. В каждом раунде:
-   - пользователи делают ставки
-   - ставка — это **увеличение общего вклада пользователя**
-3. В конце раунда:
-   - выбираются **Top-N по сумме ставки**
-   - они получают призы
-4. Деньги проигравших:
-   - **не сгорают**
-   - остаются в `reserved`
-   - автоматически участвуют в следующем раунде
-
----
-
-### 2.2 Почему не “списание сразу”
-
-❌ Плохая модель:
-- списывать деньги напрямую со счета
-- пытаться «откатить» при ошибках
-
-✅ Используется **ledger-first модель**:
-
-- **ledger** — источник истины (immutable)
-- **wallet** — агрегатное представление
-- **participation** — деньги, зарезервированные под конкретный аукцион
-
-Это даёт:
-- прозрачность
-- возможность аудита
-- безопасный рефанд
-- устойчивость к сбоям
-
----
-
-### 2.3 Anti-sniping
-
-Чтобы избежать “ставки в последнюю секунду”:
-
-- если ставка пришла за `thresholdSec` до конца
-- раунд **продлевается** на `extendSec`
-- но не более `maxExtensions`
-- есть абсолютный `hardDeadline`
-
-Реализовано **одним атомарным update-pipeline** в MongoDB.
-
----
-
-### 2.4 Детерминированность победителей
-
-Если несколько пользователей имеют одинаковую сумму ставки:
-
-Используется фиксированный порядок:
-1. `amountTotal DESC`
-2. `lastBidAt ASC`
-3. `userId ASC`
-
----
-
-## 3. Архитектурные решения
-
-### 3.1 Основные сущности
-
-- **ledger** — неизменяемые финансовые события
-- **wallets** — агрегаты балансов пользователя
-- **participations** — участие пользователя в аукционе
-- **bids** — текущие накопленные ставки
-- **rounds** — состояние раундов
-- **items / awards** — призы и их выдача
-- **outbox** — события для realtime / SSE
-
----
-
-## 4. Технологический стек
-
-- Node.js + TypeScript
-- MongoDB 7 (replica set)
-- Docker Compose
-- SSE
-- Prometheus
-- k6
-
----
-
-## 5. Запуск
-
+## Run locally (Docker)
 ```bash
 cp .env.example .env
-docker compose up -d --build
+docker compose up --build
 ```
 
-- UI: http://localhost:8080  
-- Health: http://localhost:8080/health  
-- Metrics: http://localhost:8080/metrics  
+Open:
+- UI: http://localhost:8080
+- API health: http://localhost:8080/api/health
 
----
+## Quick demo script
+1) Open UI http://localhost:8080
+2) Create a user with initial balance
+3) Create an auction (DRAFT), then start it
+4) Open auction page, place bids
+5) Click **Start demo load (50 bots)**
 
-## 6. Demo auth
+## Key endpoints (short)
+- `POST /api/users` create user (name optional)
+- `GET /api/users/:id` get user & balance
+- `POST /api/auctions` create auction
+- `POST /api/auctions/:id/start` start (creates round #1)
+- `POST /api/auctions/:id/bid` place/increase bid for user (one entry per user per auction)
+- `POST /api/auctions/:id/demo-bots` start 50 demo bots
+- `GET /api/auctions/:id` auction state
+- `GET /api/auctions/:id/round` current round
+- `GET /api/auctions/:id/top` top entries for current round
+- `GET /api/auctions/:id/events` SSE stream
 
-Header:
+## Design notes (why it’s stable)
+- All money movements are performed inside MongoDB **transactions**
+- Every bid uses **delta locking** (available -> locked), no double-charging
+- Round settlement is protected by an atomic **status transition**: LIVE -> FINISHING -> FINISHED
+- A scheduler worker finalizes rounds based on `endAt`
 
-```
-X-User-Id: demo_user_1
-```
+More details: see **SPEC.md**.
 
----
 
-## 7. Итог
-
-Проект демонстрирует production-подход к проектированию сложной финансовой системы аукционов.
+## UI
+- Интерфейс на русском
+- Подписанные параметры создания аукциона (включая anti-sniping)
+- Настройка демо-ботов (количество и интервал)
+- Модалка с победителями по раундам после завершения аукциона

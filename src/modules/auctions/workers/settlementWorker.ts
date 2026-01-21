@@ -1,230 +1,132 @@
-import { ObjectId, MongoServerError } from "mongodb";
-import type { MongoCtx } from "../../../app/mongo";
-import { colls } from "../infrastructure/collections";
-import { now } from "../../../common/time";
-import { AuctionStatus, RoundStatus } from "../domain/states";
-import { HttpError } from "../../../common/errors";
-import { appendOutbox } from "../application/adminService";
-import { settlementDuration } from "../../../app/metrics";
-import { config } from "../../../app/config";
+import { ObjectId } from "mongodb";
+import { getMongoDb, getMongoClient } from "../../../app/mongo";
+import { assert } from "../../../common/errors";
+import { auctionsCollection, roundsCollection, entriesCollection } from "../infrastructure/collections";
+import { AuctionStatus, EntryStatus, RoundStatus } from "../domain/states";
+import { adjustBalancesTx } from "../../users/application/userService";
+import { events } from "../application/eventsService";
 
-function isDupKey(e: any) {
-  return e instanceof MongoServerError && e.code === 11000;
-}
+export async function settleRoundById(roundId: string) {
+  const db = getMongoDb();
+  const roundObjectId = new ObjectId(roundId);
 
-function awardIdFor(roundId: ObjectId, rank: number) {
-  return `A:${roundId.toHexString()}:${rank}`;
-}
+  // Acquire "lock" by atomically transitioning LIVE -> FINISHING
+  const lock = await roundsCollection(db).findOneAndUpdate(
+  { _id: roundObjectId, status: RoundStatus.LIVE },
+  { $set: { status: RoundStatus.FINISHING } }
+);
+if (!lock) return; // someone else is settling
 
-function settleSpendKey(roundId: ObjectId, userId: string) {
-  return `SETTLE:SPEND:${roundId.toHexString()}:${userId}`;
-}
+  const session = getMongoClient().startSession();
+  try {
+    await session.withTransaction(async () => {
+      const round = await roundsCollection(db).findOne({ _id: roundObjectId }, { session });
+      assert(round, "STATE", "Round not found");
+      const auction = await auctionsCollection(db).findOne({ _id: round.auctionId }, { session });
+      assert(auction, "STATE", "Auction not found");
+      assert(auction.status === AuctionStatus.LIVE, "STATE", "Auction not LIVE");
 
-export function startSettlementWorker(mongo: MongoCtx, tickMs: number) {
-  const c = colls(mongo.db);
+      // compute winners
+      const remaining = auction.totalItems - auction.itemsAwarded;
+      const winnersCount = Math.min(auction.awardPerRound, Math.max(0, remaining));
 
-  setInterval(async () => {
-    const timer = settlementDuration.startTimer();
+      const active = await entriesCollection(db)
+        .find({ auctionId: auction._id, status: EntryStatus.ACTIVE }, { session })
+        .sort({ amount: -1, lastBidAt: 1 })
+        .toArray();
 
-    const r = await c.rounds.findOneAndUpdate(
-      { status: RoundStatus.LOCKED },
-      { $set: { status: RoundStatus.SETTLING, updatedAt: now() } },
-      { returnDocument: "after" }
-    );
-    
-    if (!r) return;
-    
-    const session = mongo.client.startSession();
-    try {
-      await session.withTransaction(async () => {
-        const roundFresh = await c.rounds.findOne({ _id: r._id }, { session });
-        if (!roundFresh) throw new HttpError(404, "NOT_FOUND", "Round not found");
-        if (roundFresh.status !== RoundStatus.SETTLING) return;
+      const winners = active.slice(0, winnersCount);
+      const losers = active.slice(winnersCount);
 
-        const auction = await c.auctions.findOne({ _id: roundFresh.auctionId }, { session });
-        if (!auction) throw new HttpError(404, "NOT_FOUND", "Auction not found");
+      if (winners.length > 0) {
+        const winnerIds = winners.map((e) => e._id);
+        await entriesCollection(db).updateMany(
+          { _id: { $in: winnerIds } },
+          { $set: { status: EntryStatus.WON, wonRoundIndex: round.index, wonAt: new Date() } },
+          { session }
+        );
 
-        // Determine top-N deterministically
-        const top = await c.bids
-          .find({ roundId: roundFresh._id }, { session })
-          .sort({ amountTotal: -1, lastBidAt: 1, userId: 1 })
-          .limit(roundFresh.awardCount)
-          .toArray();
+        // spend winners locked funds: move locked -> (spent), represented as locked decrease only
+        for (const w of winners) {
+          await adjustBalancesTx(w.userId, 0, -w.amount, session);
+        }
+      }
 
-        // Pick N available items
-        const items = await c.items
-          .find({ auctionId: auction._id, status: "AVAILABLE" }, { session })
-          .sort({ _id: 1 })
-          .limit(top.length)
-          .toArray();
+      // losers remain ACTIVE unless auction completes; no change now
 
-        const awardedCount = Math.min(top.length, items.length);
+      // finish round
+      await roundsCollection(db).updateOne(
+        { _id: round._id },
+        { $set: { status: RoundStatus.FINISHED } },
+        { session }
+      );
 
-        // Award loop: idempotent deterministic awardId + transactional mark item
-        for (let i = 0; i < awardedCount; i++) {
-          const bidder = top[i];
-          const item = items[i];
-          const rank = i + 1;
+      await auctionsCollection(db).updateOne(
+        { _id: auction._id },
+        {
+          $inc: { itemsAwarded: winners.length },
+        },
+        { session }
+      );
 
-          const aId = awardIdFor(roundFresh._id, rank);
-          const exists = await c.awards.findOne({ _id: aId }, { session });
-          if (exists) continue;
+      const auctionAfter = await auctionsCollection(db).findOne({ _id: auction._id }, { session });
+      assert(auctionAfter, "STATE", "Auction missing after update");
 
-          // mark item as awarded (guard against double award)
-          const itemUpd = await c.items.updateOne(
-            { _id: item._id, status: "AVAILABLE" },
-            { $set: { status: "AWARDED", awardedToUserId: bidder.userId, awardId: aId, updatedAt: now() } },
+      const remainingAfter = auctionAfter.totalItems - auctionAfter.itemsAwarded;
+
+      if (remainingAfter > 0) {
+        // create next round
+        const now = new Date();
+        const nextRound = {
+          _id: new ObjectId(),
+          auctionId: auctionAfter._id,
+          index: round.index + 1,
+          status: RoundStatus.LIVE,
+          startAt: now,
+          endAt: new Date(now.getTime() + auctionAfter.roundDurationSec * 1000),
+          extensions: 0,
+        };
+        await roundsCollection(db).insertOne(nextRound, { session });
+        await auctionsCollection(db).updateOne(
+          { _id: auctionAfter._id },
+          { $set: { currentRoundId: nextRound._id } },
+          { session }
+        );
+      } else {
+        // complete auction: mark remaining ACTIVE as LOST and refund their locked to available
+        await auctionsCollection(db).updateOne(
+          { _id: auctionAfter._id },
+          { $set: { status: AuctionStatus.COMPLETED }, $unset: { currentRoundId: "" } },
+          { session }
+        );
+
+        const stillActive = await entriesCollection(db).find(
+          { auctionId: auctionAfter._id, status: EntryStatus.ACTIVE },
+          { session }
+        ).toArray();
+
+        if (stillActive.length > 0) {
+          await entriesCollection(db).updateMany(
+            { auctionId: auctionAfter._id, status: EntryStatus.ACTIVE },
+            { $set: { status: EntryStatus.LOST } },
             { session }
           );
-          if (itemUpd.matchedCount === 0) continue;
 
-          const serial = `${roundFresh.index}-${rank}`;
-          const spendAmount = bidder.amountTotal;
-
-          await c.awards.insertOne(
-            {
-              _id: aId,
-              auctionId: auction._id,
-              roundId: roundFresh._id,
-              roundIndex: roundFresh.index,
-              userId: bidder.userId,
-              itemId: item._id,
-              rank,
-              serial,
-              spendAmount,
-              createdAt: now(),
-            },
-            { session }
-          );
-
-          // Spend reserved (per-auction participation), idempotent ledger key
-          const spendKey = settleSpendKey(roundFresh._id, bidder.userId);
-          try {
-            await c.ledger.insertOne(
-              {
-                _id: new ObjectId(),
-                userId: bidder.userId,
-                currency: config.CURRENCY,
-                type: "BID_SPEND",
-                amount: spendAmount,
-                direction: "DEBIT",
-                auctionId: auction._id,
-                roundId: roundFresh._id,
-                awardId: aId,
-                idempotencyKey: spendKey,
-                createdAt: now(),
-              },
-              { session }
-            );
-
-            await c.participations.updateOne(
-              { userId: bidder.userId, auctionId: auction._id, currency: config.CURRENCY, reserved: { $gte: spendAmount } },
-              { $inc: { reserved: -spendAmount, version: 1 }, $set: { updatedAt: now() } },
-              { session }
-            );
-          } catch (e: any) {
-            if (!isDupKey(e)) throw e;
+          for (const e of stillActive) {
+            // refund full locked amount (which equals entry.amount for ACTIVE entries)
+            await adjustBalancesTx(e.userId, +e.amount, -e.amount, session);
           }
-
-          await appendOutbox(mongo, {
-            type: "AWARD_ISSUED",
-            aggregate: "ROUND",
-            aggregateId: roundFresh._id,
-            auctionId: auction._id,
-            roundId: roundFresh._id,
-            payload: { roundId: roundFresh._id.toHexString(), userId: bidder.userId, rank, serial, itemId: item._id.toHexString() },
-          });
         }
+      }
+    });
+  } finally {
+    await session.endSession();
+  }
 
-        // Finish round
-        await c.rounds.updateOne(
-          { _id: roundFresh._id },
-          { $set: { status: RoundStatus.FINISHED, updatedAt: now() } },
-          { session }
-        );
-
-        await appendOutbox(mongo, {
-          type: "ROUND_SETTLED",
-          aggregate: "ROUND",
-          aggregateId: roundFresh._id,
-          auctionId: auction._id,
-          roundId: roundFresh._id,
-          payload: { roundId: roundFresh._id.toHexString(), index: roundFresh.index, awarded: awardedCount },
-        });
-
-        // items remaining?
-        const remaining = await c.items.countDocuments({ auctionId: auction._id, status: "AVAILABLE" }, { session });
-
-        if (remaining <= 0) {
-          // move to refund completion flow (batched)
-          await c.auctions.updateOne(
-            { _id: auction._id },
-            { $set: { status: AuctionStatus.COMPLETING_REFUNDS, refundCursor: { lastId: undefined }, updatedAt: now() }, $unset: { activeRoundId: "" } },
-            { session }
-          );
-          await appendOutbox(mongo, {
-            type: "AUCTION_ITEMS_DEPLETED",
-            aggregate: "AUCTION",
-            aggregateId: auction._id,
-            auctionId: auction._id,
-            payload: { auctionId: auction._id.toHexString() },
-          });
-          return;
-        }
-
-        // Create next round
-        const nextIndex = roundFresh.index + 1;
-        const startAt = now();
-        const endAt = new Date(startAt.getTime() + auction.roundConfig.roundDurationSec * 1000);
-        const hardEndAt = auction.roundConfig.antiSniping.hardDeadlineSec
-          ? new Date(startAt.getTime() + auction.roundConfig.antiSniping.hardDeadlineSec * 1000)
-          : undefined;
-
-        const nextRoundId = new ObjectId();
-        await c.rounds.insertOne(
-          {
-            _id: nextRoundId,
-            auctionId: auction._id,
-            index: nextIndex,
-            status: RoundStatus.SCHEDULED,
-            startAt,
-            endAt,
-            hardEndAt,
-            extensionsCount: 0,
-            awardCount: auction.roundConfig.defaultAwardCount,
-            minBid: auction.roundConfig.minBid,
-            minIncrement: auction.roundConfig.minIncrement,
-            antiSniping: auction.roundConfig.antiSniping,
-            stats: { bidsCount: 0, uniqueBidders: 0 },
-            createdAt: now(),
-            updatedAt: now(),
-          } as any,
-          { session }
-        );
-
-        await c.auctions.updateOne(
-          { _id: auction._id },
-          { $set: { activeRoundId: nextRoundId, updatedAt: now() } },
-          { session }
-        );
-
-        await appendOutbox(mongo, {
-          type: "NEXT_ROUND_SCHEDULED",
-          aggregate: "AUCTION",
-          aggregateId: auction._id,
-          auctionId: auction._id,
-          roundId: nextRoundId,
-          payload: { auctionId: auction._id.toHexString(), roundId: nextRoundId.toHexString(), index: nextIndex, startAt: startAt.toISOString(), endAt: endAt.toISOString() },
-        });
-      });
-    } catch (e: any) {
-      // if settlement tx fails, revert round to LOCKED for retry
-      await c.rounds.updateOne({ _id: r._id, status: RoundStatus.SETTLING }, { $set: { status: RoundStatus.LOCKED, updatedAt: now() } });
-      // eslint-disable-next-line no-console
-      console.error("settlement error", e);
-    } finally {
-      await session.endSession();
-      timer();
-    }
-  }, tickMs);
+  // out-of-transaction events
+  const round = await roundsCollection(db).findOne({ _id: roundObjectId });
+  const auction = await auctionsCollection(db).findOne({ _id: lock.auctionId });
+  if (auction) events.auctionUpdated(auction._id.toHexString(), auction);
+  if (round) events.roundUpdated(round.auctionId.toHexString(), round);
+  events.topUpdated(lock.auctionId.toHexString(), { type: "ROUND_SETTLED" });
 }

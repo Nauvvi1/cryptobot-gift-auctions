@@ -1,104 +1,53 @@
 import express from "express";
+import cors from "cors";
 import path from "path";
-import crypto from "crypto";
-import type { MongoCtx } from "./mongo";
+import { asyncHandler } from "../common/asyncHandler";
+import { rateLimit } from "../common/rateLimit";
 import { authMiddleware } from "../modules/auth/authMiddleware";
-import { routes } from "../modules/auctions/interfaces/http/routes";
-import { registry, httpLatency } from "./metrics";
-import { asHttpError } from "../common/errors";
+import { registerAuctionRoutes } from "../modules/auctions/interfaces/http/routes";
+import { registerUserRoutes } from "../modules/users/interfaces/http/routes";
+import { AppError } from "../common/errors";
 
-function getReqId(req: any) {
-  const header = req.header?.("X-Request-Id");
-  if (typeof header === "string" && header.trim()) return header.trim();
-  return crypto.randomUUID();
-}
-
-// avoid logging massive bodies
-function safeBody(body: any) {
-  if (body == null) return body;
-  try {
-    const s = JSON.stringify(body);
-    if (s.length <= 2000) return body;
-    return { _truncated: true, length: s.length };
-  } catch {
-    return { _unserializable: true };
-  }
-}
-
-export async function createApp(mongo: MongoCtx) {
+export function createHttpServer() {
   const app = express();
 
+  app.use(cors());
   app.use(express.json({ limit: "1mb" }));
+  app.use(rateLimit());
 
-  // request id
-  app.use((req: any, res: any, next) => {
-    const rid = getReqId(req);
-    req.requestId = rid;
-    res.setHeader("X-Request-Id", rid);
-    next();
-  });
-
-  // metrics
-  app.use((req: any, res: any, next) => {
-    const start = Date.now();
-    res.on("finish", () => {
-      const dur = Date.now() - start;
-
-      // Best-effort route label:
-      // If router set res.locals.routePath, use it; else fallback to req.path
-      const route = res.locals?.routePath ? String(res.locals.routePath) : req.path;
-
-      httpLatency.labels(req.method, route, String(res.statusCode)).observe(dur);
-    });
-    next();
-  });
-
-  app.get("/health", (_req, res) => res.json({ ok: true }));
-  app.get("/metrics", async (_req, res) => {
-    res.setHeader("Content-Type", registry.contentType);
-    res.end(await registry.metrics());
-  });
-
-  app.use(express.static(path.join(process.cwd(), "public")));
-
+  // naive auth for demo: userId header/query
   app.use(authMiddleware());
 
-  // API routes
-  app.use(routes(mongo));
+  app.get("/api/health", (_req, res) => res.json({ ok: true }));
 
-  // 404
-  app.use((req: any, res: any) => {
-    res.status(404).json({
-      code: "NOT_FOUND",
-      message: `Route not found: ${req.method} ${req.originalUrl}`,
-    });
-  });
+  registerUserRoutes(app);
+  registerAuctionRoutes(app);
 
-  // Global error handler (MUST be last)
-  app.use((err: any, req: any, res: any, _next: any) => {
-    const he = asHttpError(err);
+  // static UI
+  const publicDir = path.join(process.cwd(), "public");
+  app.use(express.static(publicDir));
+  app.get(
+    "/",
+    asyncHandler(async (_req, res) => {
+      res.sendFile(path.join(publicDir, "index.html"));
+    }),
+  );
 
-    // Centralized logging
-    console.error("[HTTP ERROR]", {
-      requestId: req.requestId,
-      method: req.method,
-      url: req.originalUrl,
-      userId: req.userId,
-      params: req.params,
-      query: req.query,
-      body: safeBody(req.body),
-      status: he.status,
-      code: he.code,
-      message: he.message,
-      details: he.details,
-      stack: err?.stack,
-    });
+  // Global error handler: always returns structured JSON
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  app.use((err: any, _req: any, res: any, _next: any) => {
+    const isApp = err instanceof AppError;
+    const status = Number(err?.statusCode ?? (isApp ? err.statusCode : 500));
+    const code = String(err?.code ?? (isApp ? err.code : "INTERNAL"));
+    const message = String(err?.message ?? "Internal error");
+    const details = err?.details ?? undefined;
 
-    res.status(he.status).json({
-      code: he.code,
-      message: he.message,
-      details: he.details,
-      requestId: req.requestId,
+    res.status(status).json({
+      error: {
+        code,
+        message,
+        ...(details ? { details } : {}),
+      },
     });
   });
 

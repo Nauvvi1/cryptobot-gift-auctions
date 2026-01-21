@@ -1,199 +1,117 @@
-import { Router } from "express";
-import type { MongoCtx } from "../../../../app/mongo";
-import { HttpError } from "../../../../common/errors";
-import { parseOrThrow } from "../../../../common/validate";
-import { MemoryRateLimiter } from "../../../../common/rateLimit";
-import { config } from "../../../../app/config";
-import { sseHub } from "../../realtime/sseHub";
+import { Express } from "express";
 import { asyncHandler } from "../../../../common/asyncHandler";
+import { asNumber, asString } from "../../../../common/validate";
+import { assert } from "../../../../common/errors";
+import { createAuction, startAuction } from "../../application/adminService";
+import { placeBid } from "../../application/bidService";
+import { getAuction, getCurrentRound, getTopEntriesForAuction, getWinnersByRound } from "../../application/queries";
+import { sseAddClient } from "../../realtime/sseHub";
+import { startDemoBots } from "../../application/demoBots";
 
-import { CreateAuctionDto, SeedItemsDto, StartAuctionDto, PlaceBidDto, DepositDto } from "./dto";
-
-import {
-  createAuction,
-  seedItems,
-  startAuction,
-  cancelAuction,
-  deposit,
-} from "../../application/adminService";
-import { placeOrIncreaseBid } from "../../application/bidService";
-import {
-  listAuctions,
-  getAuction,
-  getRoundTop,
-  getMyWallet,
-  getMyBids,
-  getMyAwards,
-} from "../../application/queries";
-import { listEvents } from "../../application/eventsService";
-
-const rl = new MemoryRateLimiter();
-const globalRl = new MemoryRateLimiter();
-
-function markRoute(path: string) {
-  return (req: any, res: any, next: any) => {
-    res.locals.routePath = path;
-    next();
-  };
+function isHex24(s: string) {
+  return /^[a-f0-9]{24}$/i.test(s);
 }
 
-export function routes(mongo: MongoCtx) {
-  const r = Router();
+function requireHex24(value: string, code: string, message: string) {
+  assert(isHex24(value), code, message, 400);
+  return value;
+}
 
-  // SSE
-  r.get(
-    "/sse",
-    markRoute("/sse"),
-    asyncHandler(async (req, res) => {
-      const auctionId = typeof req.query.auctionId === "string" ? req.query.auctionId : undefined;
-      const roundId = typeof req.query.roundId === "string" ? req.query.roundId : undefined;
-      const userId =
-        typeof req.query.userId === "string" ? req.query.userId : (req as any).userId;
-      const afterSeq = Number(req.query.afterSeq ?? 0) || 0;
-
-      res.writeHead(200, {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
-        Connection: "keep-alive",
-      });
-
-      sseHub.add(res, { auctionId, roundId, userId, afterSeq });
-
-      const t = setInterval(() => res.write(": keepalive\n\n"), 15000);
-      res.on("close", () => clearInterval(t));
-    })
-  );
-
-  // Public API
-  r.get(
+export function registerAuctionRoutes(app: Express) {
+  app.post(
     "/api/auctions",
-    markRoute("/api/auctions"),
-    asyncHandler(async (_req, res) => {
-      res.json(await listAuctions(mongo));
-    })
-  );
-
-  r.get(
-    "/api/auctions/:id",
-    markRoute("/api/auctions/:id"),
     asyncHandler(async (req, res) => {
-      res.json(await getAuction(mongo, req.params.id));
-    })
-  );
-
-  r.get(
-    "/api/rounds/:id/top",
-    markRoute("/api/rounds/:id/top"),
-    asyncHandler(async (req, res) => {
-      const limit = Number(req.query.limit ?? 100);
-      res.json(await getRoundTop(mongo, req.params.id, limit));
-    })
-  );
-
-  r.post(
-    "/api/rounds/:id/bid",
-    markRoute("/api/rounds/:id/bid"),
-    asyncHandler(async (req, res) => {
-      const userId = (req as any).userId!;
-      const idem = req.header("Idempotency-Key");
-      if (!idem) throw new HttpError(400, "MISSING_IDEMPOTENCY_KEY", "Idempotency-Key required");
-
-      rl.hit(`bid:user:${userId}`, config.BID_RL_WINDOW_MS, config.BID_RL_MAX);
-      globalRl.hit(`bid:global`, config.GLOBAL_BID_RL_WINDOW_MS, config.GLOBAL_BID_RL_MAX);
-
-      const input = parseOrThrow(PlaceBidDto, req.body);
-      const out = await placeOrIncreaseBid(mongo, {
-        roundId: req.params.id,
-        userId,
-        idempotencyKey: idem,
-        input,
+      const body = req.body ?? {};
+      const auction = await createAuction({
+        title: asString(body.title, "title", 80),
+        totalItems: asNumber(body.totalItems, "totalItems"),
+        awardPerRound: asNumber(body.awardPerRound, "awardPerRound"),
+        roundDurationSec: asNumber(body.roundDurationSec, "roundDurationSec"),
+        antiSniping: {
+          thresholdSec: asNumber(body.antiSniping?.thresholdSec, "antiSniping.thresholdSec"),
+          extendSec: asNumber(body.antiSniping?.extendSec, "antiSniping.extendSec"),
+          maxExtensions: asNumber(body.antiSniping?.maxExtensions, "antiSniping.maxExtensions"),
+        },
       });
+      res.json({ auction });
+    }),
+  );
+
+  app.post(
+    "/api/auctions/:id/start",
+    asyncHandler(async (req, res) => {
+      const id = requireHex24(asString(req.params.id, "id", 40), "INVALID_AUCTION_ID", "Некорректный Auction ID");
+      const round = await startAuction(id);
+      res.json({ round });
+    }),
+  );
+
+  app.get(
+    "/api/auctions/:id",
+    asyncHandler(async (req, res) => {
+      const id = requireHex24(asString(req.params.id, "id", 40), "INVALID_AUCTION_ID", "Некорректный Auction ID");
+      const auction = await getAuction(id);
+      res.json({ auction });
+    }),
+  );
+
+  app.get(
+    "/api/auctions/:id/round",
+    asyncHandler(async (req, res) => {
+      const id = requireHex24(asString(req.params.id, "id", 40), "INVALID_AUCTION_ID", "Некорректный Auction ID");
+      const round = await getCurrentRound(id);
+      res.json({ round });
+    }),
+  );
+
+  app.get(
+    "/api/auctions/:id/top",
+    asyncHandler(async (req, res) => {
+      const id = requireHex24(asString(req.params.id, "id", 40), "INVALID_AUCTION_ID", "Некорректный Auction ID");
+      const limit = req.query.limit ? asNumber(req.query.limit, "limit") : 20;
+      const top = await getTopEntriesForAuction(id, limit);
+      res.json({ top });
+    }),
+  );
+
+  app.post(
+    "/api/auctions/:id/bid",
+    asyncHandler(async (req, res) => {
+      const id = requireHex24(asString(req.params.id, "id", 40), "INVALID_AUCTION_ID", "Некорректный Auction ID");
+      const body = req.body ?? {};
+      const userId = requireHex24(asString(body.userId, "userId", 40), "INVALID_USER_ID", "Некорректный User ID");
+      const amount = asNumber(body.amount, "amount");
+      await placeBid({ auctionId: id, userId, amount });
+      res.json({ ok: true });
+    }),
+  );
+
+  app.get(
+    "/api/auctions/:id/events",
+    asyncHandler(async (req, res) => {
+      const id = requireHex24(asString(req.params.id, "id", 40), "INVALID_AUCTION_ID", "Некорректный Auction ID");
+      sseAddClient(res, id);
+    }),
+  );
+
+  app.post(
+    "/api/auctions/:id/demo-bots",
+    asyncHandler(async (req, res) => {
+      const id = requireHex24(asString(req.params.id, "id", 40), "INVALID_AUCTION_ID", "Некорректный Auction ID");
+      const count = req.body?.count ? asNumber(req.body.count, "count") : 50;
+      const intervalMinMs = req.body?.intervalMinMs ? asNumber(req.body.intervalMinMs, "intervalMinMs") : 700;
+      const intervalMaxMs = req.body?.intervalMaxMs ? asNumber(req.body.intervalMaxMs, "intervalMaxMs") : 1200;
+      const out = await startDemoBots(id, { count, intervalMinMs, intervalMaxMs });
       res.json(out);
-    })
+    }),
   );
 
-  r.get(
-    "/api/me/wallet",
-    markRoute("/api/me/wallet"),
+  app.get(
+    "/api/auctions/:id/results",
     asyncHandler(async (req, res) => {
-      res.json(await getMyWallet(mongo, (req as any).userId!));
-    })
+      const id = requireHex24(asString(req.params.id, "id", 40), "INVALID_AUCTION_ID", "Некорректный Auction ID");
+      const results = await getWinnersByRound(id);
+      res.json({ results });
+    }),
   );
-
-  r.get(
-    "/api/me/bids",
-    markRoute("/api/me/bids"),
-    asyncHandler(async (req, res) => {
-      res.json(await getMyBids(mongo, (req as any).userId!));
-    })
-  );
-
-  r.get(
-    "/api/me/awards",
-    markRoute("/api/me/awards"),
-    asyncHandler(async (req, res) => {
-      res.json(await getMyAwards(mongo, (req as any).userId!));
-    })
-  );
-
-  // Events replay
-  r.get(
-    "/api/events",
-    markRoute("/api/events"),
-    asyncHandler(async (req, res) => {
-      const afterSeq = req.query.afterSeq != null ? Number(req.query.afterSeq) : undefined;
-      const limit = req.query.limit != null ? Number(req.query.limit) : undefined;
-      const auctionId = typeof req.query.auctionId === "string" ? req.query.auctionId : undefined;
-      const roundId = typeof req.query.roundId === "string" ? req.query.roundId : undefined;
-
-      res.json(await listEvents(mongo, { afterSeq, limit, auctionId, roundId }));
-    })
-  );
-
-  // Admin API
-  r.post(
-    "/admin/auctions",
-    markRoute("/admin/auctions"),
-    asyncHandler(async (req, res) => {
-      const input = parseOrThrow(CreateAuctionDto, req.body);
-      res.json(await createAuction(mongo, input));
-    })
-  );
-
-  r.post(
-    "/admin/auctions/:id/items/seed",
-    markRoute("/admin/auctions/:id/items/seed"),
-    asyncHandler(async (req, res) => {
-      const input = parseOrThrow(SeedItemsDto, req.body);
-      res.json(await seedItems(mongo, req.params.id, input));
-    })
-  );
-
-  r.post(
-    "/admin/auctions/:id/start",
-    markRoute("/admin/auctions/:id/start"),
-    asyncHandler(async (req, res) => {
-      const input = parseOrThrow(StartAuctionDto, req.body);
-      res.json(await startAuction(mongo, req.params.id, input));
-    })
-  );
-
-  r.post(
-    "/admin/auctions/:id/cancel",
-    markRoute("/admin/auctions/:id/cancel"),
-    asyncHandler(async (req, res) => {
-      res.json(await cancelAuction(mongo, req.params.id));
-    })
-  );
-
-  r.post(
-    "/admin/users/:userId/deposit",
-    markRoute("/admin/users/:userId/deposit"),
-    asyncHandler(async (req, res) => {
-      const input = parseOrThrow(DepositDto, req.body);
-      res.json(await deposit(mongo, req.params.userId, input.amount));
-    })
-  );
-
-  return r;
 }
