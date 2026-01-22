@@ -1,103 +1,64 @@
-# SPEC — Multi-round gift auction (Clean Version)
+# SPEC — Telegram Gift Auction
 
-This spec is intentionally minimal and judge-friendly.
-Where Telegram's exact behavior is unknown, assumptions are explicitly stated.
+## Цель
+Воспроизвести механику Telegram Gift Auctions — многораундового аукциона цифровых товаров — с фокусом на корректность, конкурентность и продуктовую логику.
 
-## Domain model
+## Ключевое допущение
+Это **не классический аукцион**.
+Высокая ставка не гарантирует мгновенную победу — она влияет на позицию в ранжировании.
 
-### Auction
-```ts
-Auction {
-  _id
-  title
-  status: "DRAFT" | "LIVE" | "COMPLETED"
-  totalItems: number
-  awardPerRound: number
-  roundDurationSec: number
-  antiSniping: { thresholdSec: number, extendSec: number, maxExtensions: number }
-  itemsAwarded: number                 // derived counter (no snapshots)
-  currentRoundId?: ObjectId
-  createdAt
-}
-```
+## Модель
+- **Auction**: параметры, статус, текущий раунд  
+- **Round**: тайминг, статус, количество продлений  
+- **Entry**: ставка пользователя (одна на аукцион, кумулятивная)
 
-### Round
-```ts
-Round {
-  _id
-  auctionId
-  index: number
-  status: "LIVE" | "FINISHING" | "FINISHED"
-  startAt: Date
-  endAt: Date
-  extensions: number
-}
-```
+Скрытых состояний нет — всё вычисляется из текущих данных.
 
-### Entry
-```ts
-Entry {
-  _id
-  auctionId
-  userId
-  amount: number
-  status: "ACTIVE" | "WON" | "LOST"
-  lastBidAt: Date
-  wonRoundIndex?: number
-  wonAt?: Date
-}
-```
+## Механика раундов
+- Аукцион состоит из последовательных раундов
+- В каждом раунде:
+  - ACTIVE entries сортируются по `amount DESC, lastBidAt ASC`
+  - `awardPerRound` участников получают приз (WON)
+  - остальные продолжают участие
+- Когда предметы закончились → аукцион COMPLETED
 
-### User (minimal for balance display + correctness)
-```ts
-User {
-  _id
-  name?: string
-  balanceAvailable: number
-  balanceLocked: number
-  createdAt
-}
-```
+## Ставки
+- Один entry на пользователя в рамках аукциона
+- Повышение ставки — увеличение amount
+- Разрешены ставки меньше чужих:
+  - ставка влияет на позицию, а не на мгновенную победу
+- Средства резервируются транзакционно
 
-## Auction lifecycle (simple words)
+## Anti-sniping
+- Если ставка сделана за `thresholdSec` до конца раунда:
+  - раунд продлевается на `extendSec`
+- Количество продлений ограничено `maxExtensions`
+- Защита от:
+  - ставок «в последнюю миллисекунду»
+  - бесконечных раундов
 
-- Auction starts in **DRAFT**
-- `startAuction()` → creates Round #1, sets auction **LIVE**
-- During a LIVE round:
-  - user can bid (one entry per user per auction)
-  - bid increases `Entry.amount`
-  - delta is moved from `User.balanceAvailable` to `User.balanceLocked`
+## Финансовая корректность
+- Все операции со ставками — в MongoDB transactions
+- Деньги:
+  - резервируются при ставке
+  - списываются у победителей
+  - возвращаются проигравшим
+- Нет потерь и дублирования средств
 
-### Round settlement
-At `round.endAt`:
-1) take all ACTIVE entries for this auction
-2) sort: `amount DESC`, then `lastBidAt ASC`
-3) winners: top `min(awardPerRound, totalItems - itemsAwarded)`
-4) mark those entries as **WON**
-5) others remain **ACTIVE**
-6) increase `itemsAwarded` by winners count
-7) if `itemsAwarded < totalItems` → create next round (index+1)
-8) else:
-   - mark auction **COMPLETED**
-   - remaining ACTIVE → **LOST**
-   - refund: move all remaining locked funds back to available
+## Конкурентность
+- Поддержка одновременных ставок
+- Атомарные обновления
+- Защита от race conditions
 
-### Anti-sniping (assumption)
-If a bid is placed within the last `thresholdSec` seconds of the round:
-- extend `Round.endAt` by `extendSec`
-- increment `extensions`
-- stop extending once `extensions == maxExtensions`
+## Проверка под нагрузкой
+- Встроенные demo-bots:
+  - задаётся количество и интервал
+  - параллельные ставки
+  - исключены ставки в последние секунды
+- Позволяет визуально и технически проверить устойчивость
 
-This is a clean, explainable variant of anti-sniping.
-
-## Invariants
-- User balances never negative
-- Total (available + locked + spent) is conserved (spent is derived from winners' amounts)
-- Each auction awards exactly `totalItems` winners
-- A user has at most one ACTIVE/WON/LOST entry per auction (MVP constraint)
-
-## Concurrency strategy
-- `bid()` and `settleRound()` run in Mongo **transactions**
-- Round settlement uses atomic transition:
-  - `LIVE -> FINISHING` by `findOneAndUpdate`
-  - only the winner of this transition performs settlement
+## Итог
+Реализация демонстрирует:
+- понимание сложной продуктовой механики,
+- осознанные инженерные решения,
+- надёжную backend-архитектуру.

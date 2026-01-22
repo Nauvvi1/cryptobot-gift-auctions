@@ -1,64 +1,46 @@
-# Gift Auctions Platform (Clean Version)
+# Telegram Gift Auction — Backend Demo
 
-Minimal, readable implementation of a multi-round auction mechanic (inspired by Telegram Gift Auctions), focused on:
-- **one clear auction flow**
-- **correct concurrency under load**
-- **transparent domain model**
-- **simple UI** for judges (no "magic", no hidden modes)
+🎥 **Демо-видео:** https://youtu.be/5cfxlm08hpg
 
-## What you get
-- Node.js + TypeScript + MongoDB (replica set for transactions)
-- Multi-round auction:
-  - entries bid during a round
-  - at round end: top `awardPerRound` are marked **WON**
-  - others remain **ACTIVE** and continue to next round
-  - when `totalItems` are exhausted → auction **COMPLETED** and remaining ACTIVE become **LOST**
-- Anti-sniping extension:
-  - if a bid is placed within `thresholdSec` of `round.endAt`, round end is extended by `extendSec`
-  - limited by `maxExtensions`
-- SSE events stream for live UI updates
-- One-button demo load (50 bots)
+Проект — воспроизведение механики **Telegram Gift Auctions** с фокусом на продуктовую логику, конкурентность и финансовую корректность, а не на внешний интерфейс.
 
-## Run locally (Docker)
+## Что реализовано
+- Многораундовый аукцион (не классический single-deadline)
+- Ранжирование участников по сумме и времени ставки
+- Частичная выдача призов в каждом раунде
+- Anti-sniping с ограниченными продлениями
+- Транзакционная работа с балансами
+- Конкурентная обработка ставок
+- SSE для live-обновлений
+- Демо-боты для проверки под нагрузкой
+
+## Продуктовый подход
+Механика восстановлена по поведению Telegram Gift Auctions.  
+В местах, где поведение неочевидно, сделаны **явные инженерные допущения**, зафиксированные в SPEC.
+
+Ключевое отличие от классического аукциона:
+> ставка — это участие в ранжировании, а не «победа одной максимальной суммы»
+
+## Архитектура (кратко)
+- **Auction / Round / Entry** — явная модель без скрытых состояний  
+- **MongoDB transactions** — деньги не теряются и не дублируются  
+- **Idempotent updates** — устойчивость к гонкам  
+- **SSE** — обновления без polling  
+- **Demo-bots** — воспроизводимая конкурентная нагрузка  
+
+## Запуск
 ```bash
-cp .env.example .env
-docker compose up --build
+docker compose up -d --build
 ```
 
-Open:
+После запуска:
 - UI: http://localhost:8080
-- API health: http://localhost:8080/api/health
+- Всё поднимается через docker-compose
 
-## Quick demo script
-1) Open UI http://localhost:8080
-2) Create a user with initial balance
-3) Create an auction (DRAFT), then start it
-4) Open auction page, place bids
-5) Click **Start demo load (50 bots)**
+## Почему это решение
+Проект демонстрирует не «угадывание ТЗ», а умение:
+- разобраться в незнакомом продукте,
+- принять решения при неполной информации,
+- реализовать устойчивую backend-механику.
 
-## Key endpoints (short)
-- `POST /api/users` create user (name optional)
-- `GET /api/users/:id` get user & balance
-- `POST /api/auctions` create auction
-- `POST /api/auctions/:id/start` start (creates round #1)
-- `POST /api/auctions/:id/bid` place/increase bid for user (one entry per user per auction)
-- `POST /api/auctions/:id/demo-bots` start 50 demo bots
-- `GET /api/auctions/:id` auction state
-- `GET /api/auctions/:id/round` current round
-- `GET /api/auctions/:id/top` top entries for current round
-- `GET /api/auctions/:id/events` SSE stream
-
-## Design notes (why it’s stable)
-- All money movements are performed inside MongoDB **transactions**
-- Every bid uses **delta locking** (available -> locked), no double-charging
-- Round settlement is protected by an atomic **status transition**: LIVE -> FINISHING -> FINISHED
-- A scheduler worker finalizes rounds based on `endAt`
-
-More details: see **SPEC.md**.
-
-
-## UI
-- Интерфейс на русском
-- Подписанные параметры создания аукциона (включая anti-sniping)
-- Настройка демо-ботов (количество и интервал)
-- Модалка с победителями по раундам после завершения аукциона
+---
